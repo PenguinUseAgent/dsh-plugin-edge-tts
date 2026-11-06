@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Edge TTS 语音输出",
+    "description": "在每个会话中提供独立的语音输出开关，并使用 Microsoft Edge 女声朗读已完成的回复。"
+  }
+}

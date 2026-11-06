@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Edge TTS Voice Output",
+    "description": "Adds a per-session voice-output switch and reads completed replies aloud with a Microsoft Edge female voice."
+  }
+}

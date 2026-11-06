@@ -1,0 +1,3 @@
+- insert:
+    - id: penguinuseagent-edge-tts
+      name: '@penguinuseagent/dsh-plugin-edge-tts'

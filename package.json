@@ -1,0 +1,57 @@
+{
+  "name": "@penguinuseagent/dsh-plugin-edge-tts",
+  "version": "0.1.0",
+  "description": "Per-session Edge TTS voice output for the DeepSeek Harness Web GUI.",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "cordis",
+    "edge-tts",
+    "text-to-speech",
+    "accessibility"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PenguinUseAgent/dsh-plugin-edge-tts.git"
+  },
+  "bugs": {
+    "url": "https://github.com/PenguinUseAgent/dsh-plugin-edge-tts/issues"
+  },
+  "homepage": "https://github.com/PenguinUseAgent/dsh-plugin-edge-tts#readme",
+  "engines": {
+    "node": ">=20"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-chat"
+      ]
+    }
+  }
+}
