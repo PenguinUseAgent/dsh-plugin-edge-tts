@@ -73,8 +73,9 @@ Browsers on iOS all run on WebKit, including Firefox and Chrome. Two extra behav
 - **Audio unlock**: a tap anywhere in the page resumes audio and primes an HTML media element. If the first playback request is still blocked, the reply is remembered and spoken as soon as the next tap unlocks audio.
 - **Silent switch**: iOS mutes web audio while the ring/silent switch is on. If a reply plays on the Mac but not on the iPhone, turn off the silent switch and raise the media volume.
 - **Lock screen**: a locked phone suspends the page. When the page becomes visible again, a reply that arrived while hidden and is less than five minutes old is spoken.
+- **Wake lock**: while the switch is on and the page is visible, the plugin requests a screen wake lock so iOS does not suspend the conversation mid-turn. Browsers without the Screen Wake Lock API simply ignore this.
 
-Playback uses Web Audio first and falls back to an `<audio>` element when the audio context is not running.
+Playback uses Web Audio first and falls back to an `<audio>` element when the audio context is not running. When the switch is on, a small speaker button next to it replays the newest reply on demand, which is the quickest way to check a device after changing the shared switch elsewhere.
 
 ## LAN use
 

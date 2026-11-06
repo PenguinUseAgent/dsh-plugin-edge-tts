@@ -18,6 +18,7 @@ window.__ModuleLoader__.load({
         off: '语音输出已关闭',
         gesture: '语音已开启；点击页面任意位置以授权播放声音',
         confirm: '语音输出已开启。',
+        replay: '重播最近一条语音',
         synthesizing: '正在合成语音…',
         playing: '正在播放语音',
         error: '语音播放失败',
@@ -28,6 +29,7 @@ window.__ModuleLoader__.load({
         off: 'Voice output is off',
         gesture: 'Voice output is on; click anywhere in this page to allow audio',
         confirm: 'Voice output is on.',
+        replay: 'Replay the last reply',
         synthesizing: 'Synthesizing speech…',
         playing: 'Playing speech',
         error: 'Voice playback failed',
@@ -48,6 +50,9 @@ window.__ModuleLoader__.load({
       .pua-edge-tts__control[data-enabled='true'] .pua-edge-tts__track { background:var(--dsw-alias-brand-primary); border-color:var(--dsw-alias-brand-primary); }
       .pua-edge-tts__control[data-enabled='true'] .pua-edge-tts__track::after { background:var(--dsw-alias-bg-base); transform:translateX(11px); }
       .pua-edge-tts__text { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      .pua-edge-tts__replay { display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; margin-left:2px; padding:0; border:0; border-radius:999px; background:transparent; color:var(--dsw-alias-label-secondary); cursor:pointer; }
+      .pua-edge-tts__replay:hover { background:var(--dsw-alias-bg-layer-2); color:var(--dsw-alias-label-primary); }
+      .pua-edge-tts__replay:focus-visible { outline:2px solid var(--dsw-alias-brand-primary); outline-offset:1px; }
       .pua-edge-tts__sr { position:absolute; width:1px; height:1px; margin:-1px; padding:0; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; border:0; }
       @media (max-width: 720px) { .pua-edge-tts__text { display:none; } }
       @media (prefers-reduced-motion: reduce) { .pua-edge-tts__track, .pua-edge-tts__track::after { transition:none; } }
@@ -105,6 +110,8 @@ window.__ModuleLoader__.load({
       const hiddenSince = React.useRef(null);
       const pendingReply = React.useRef(null);
       const playReplyRef = React.useRef(null);
+      const syncSequence = React.useRef(0);
+      const wakeLock = React.useRef(null);
 
       React.useEffect(() => { enabledRef.current = enabled; }, [enabled]);
       React.useEffect(() => locale.subscribe(() => refreshLocale((value) => value + 1)), [locale]);
@@ -180,12 +187,14 @@ window.__ModuleLoader__.load({
 
       const syncState = React.useCallback(async () => {
         if (sessionId === undefined || sessionId === null) return;
+        const sequence = ++syncSequence.current;
         try {
           const url = new URL(STATE_ROUTE, document.baseURI);
           url.searchParams.set('sessionId', sessionId);
           const response = await fetch(url, { headers: { Accept: 'application/json' }, cache: 'no-store' });
           if (!response.ok) return;
           const data = await response.json();
+          if (sequence !== syncSequence.current) return;
           if (typeof data.enabled === 'boolean') {
             enabledRef.current = data.enabled;
             setEnabled(data.enabled);
@@ -219,6 +228,46 @@ window.__ModuleLoader__.load({
           window.removeEventListener('focus', onVisible);
         };
       }, [sessionId, syncState]);
+
+      React.useEffect(() => {
+        let disposed = false;
+        const release = () => {
+          const lock = wakeLock.current;
+          wakeLock.current = null;
+          if (lock !== null) {
+            try { lock.release(); } catch {}
+          }
+        };
+        const acquire = async () => {
+          if (disposed || !enabled || document.visibilityState !== 'visible') return;
+          if (!('wakeLock' in navigator) || wakeLock.current !== null) return;
+          try {
+            const lock = await navigator.wakeLock.request('screen');
+            if (disposed) {
+              lock.release().catch(() => {});
+              return;
+            }
+            wakeLock.current = lock;
+            if (typeof lock.addEventListener === 'function') {
+              lock.addEventListener('release', () => {
+                if (wakeLock.current === lock) wakeLock.current = null;
+              });
+            }
+          } catch {}
+        };
+        if (enabled) acquire();
+        else release();
+        const onVisibility = () => {
+          if (document.visibilityState === 'visible') acquire();
+          else release();
+        };
+        document.addEventListener('visibilitychange', onVisibility);
+        return () => {
+          disposed = true;
+          document.removeEventListener('visibilitychange', onVisibility);
+          release();
+        };
+      }, [enabled]);
 
       React.useEffect(() => {
         const unlock = () => {
@@ -378,6 +427,15 @@ window.__ModuleLoader__.load({
         }
       };
 
+      const replayLatest = () => {
+        const latest = latestAssistant;
+        if (latest !== null && !latest.interrupted) {
+          playReply(latest);
+          return;
+        }
+        playReply({ blocks: [{ kind: 'text', text: t('confirm') }], time: Date.now(), seq: -1 });
+      };
+
       const statusKey = state === 'synthesizing' ? 'synthesizing'
         : state === 'playing' ? 'playing'
           : state === 'error' ? 'error'
@@ -404,6 +462,18 @@ window.__ModuleLoader__.load({
             h('span', { className: 'pua-edge-tts__track', 'aria-hidden': 'true' }),
             h('span', { className: 'pua-edge-tts__text' }, t('label')),
           ),
+          enabled ? h('button', {
+            type: 'button',
+            className: 'pua-edge-tts__replay',
+            'aria-label': t('replay'),
+            title: t('replay'),
+            onClick: replayLatest,
+          },
+            h('svg', { viewBox: '0 0 16 16', width: 13, height: 13, 'aria-hidden': 'true' },
+              h('path', { d: 'M2.5 6h2.2L8 3.2v9.6L4.7 10H2.5z', fill: 'currentColor' }),
+              h('path', { d: 'M10.6 5.6a3.4 3.4 0 0 1 0 4.8M12 3.9a5.8 5.8 0 0 1 0 8.2', fill: 'none', stroke: 'currentColor', strokeWidth: 1.25, strokeLinecap: 'round' }),
+            ),
+          ) : null,
           h('span', { className: 'pua-edge-tts__sr', 'aria-live': 'polite' }, status),
         ),
       );

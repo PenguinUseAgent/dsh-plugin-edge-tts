@@ -1,6 +1,6 @@
 {
   "name": "@penguinuseagent/dsh-plugin-edge-tts",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Per-session Edge TTS voice output for the DeepSeek Harness Web GUI.",
   "license": "MIT",
   "type": "module",
