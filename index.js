@@ -82,9 +82,9 @@ export function defaultStateFile() {
 }
 
 /**
- * Per-session voice-output flag shared by every client of one Host.
- * Values live in memory and are written to a JSON file with a short debounce,
- * so a toggle on one device is visible to the others without a restart.
+ * 同一 Host 的所有客户端共享的「按会话语音开关」。
+ * 值保存在内存中，并以很短的防抖写入 JSON 文件，
+ * 因此在一台设备上切换后，其他设备无需重启即可看到。
  */
 export function createSessionStateStore(options = {}) {
   const file = options.file ?? defaultStateFile();

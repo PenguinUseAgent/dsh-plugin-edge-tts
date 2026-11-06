@@ -201,9 +201,9 @@ window.__ModuleLoader__.load({
             mirror(data.enabled);
             return;
           }
+          // 只迁移此前明确开启过的本地偏好，绝不把隐式的「关闭」写回服务器。
           if (enabledRef.current) await postState(true);
-        } catch {}
-      }, [sessionId, mirror, postState]);
+        } catch {}      }, [sessionId, mirror, postState]);
 
       React.useEffect(() => {
         if (sessionId === undefined || sessionId === null) return undefined;
