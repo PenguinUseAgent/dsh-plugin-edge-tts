@@ -5,7 +5,7 @@ A persistent [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness)
 ## Features
 
 - Uses the Microsoft Edge female voice `zh-CN-XiaoxiaoNeural` by default.
-- Adds an accessible **Voice output / 语音输出** switch below the composer.
+- Adds an accessible **Voice / 语音** switch in the composer tool row, visible in both new and existing conversations.
 - Stores the switch independently for every session; a newly created session starts off.
 - Synthesizes only after a running turn completes, then plays the MP3 in the browser.
 - Uses a same-origin endpoint, so pages opened from another device on the LAN play audio on that device too.
@@ -57,7 +57,7 @@ For plugin-development automation, pass the absolute checkout path to the Harnes
 ## Use
 
 1. Open a DSH session.
-2. Enable **语音输出** below the composer. This user gesture also unlocks browser audio.
+2. Enable **语音** in the composer tool row (next to the model selector). This user gesture also unlocks browser audio.
 3. Send a message. When the turn is fully complete, the final assistant reply is synthesized and played.
 4. Disable the switch to stop current playback and prevent later automatic playback.
 

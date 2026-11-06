@@ -9,38 +9,43 @@ window.__ModuleLoader__.load({
 
     const dictionaries = {
       zh: {
-        label: '语音输出',
-        on: '已开启，回复完成后自动朗读',
-        off: '已关闭',
+        label: '语音',
+        on: '语音输出已开启，回复完成后自动朗读',
+        off: '语音输出已关闭',
         synthesizing: '正在合成语音…',
-        playing: '正在播放',
+        playing: '正在播放语音',
         error: '语音播放失败',
       },
       en: {
-        label: 'Voice output',
-        on: 'On — read completed replies aloud',
-        off: 'Off',
+        label: 'Voice',
+        on: 'Voice output is on — completed replies are read aloud',
+        off: 'Voice output is off',
         synthesizing: 'Synthesizing speech…',
-        playing: 'Playing',
+        playing: 'Playing speech',
         error: 'Voice playback failed',
       },
     };
 
     const css = `
-      .pua-edge-tts { display:flex; align-items:center; gap:8px; min-height:24px; color:var(--dsw-alias-label-secondary); font-size:12px; line-height:18px; }
-      .pua-edge-tts__switch { appearance:none; width:30px; height:18px; margin:0; padding:2px; border:1px solid var(--dsw-alias-border-l2); border-radius:999px; background:var(--dsw-alias-bg-layer-2); cursor:pointer; transition:background .16s ease,border-color .16s ease; }
-      .pua-edge-tts__switch::after { content:''; display:block; width:12px; height:12px; border-radius:50%; background:var(--dsw-alias-label-secondary); transition:transform .16s ease,background .16s ease; }
-      .pua-edge-tts__switch:checked { border-color:var(--dsw-alias-brand-primary); background:var(--dsw-alias-brand-primary); }
-      .pua-edge-tts__switch:checked::after { background:var(--dsw-alias-bg-base); transform:translateX(12px); }
-      .pua-edge-tts__switch:focus-visible { outline:2px solid var(--dsw-alias-brand-primary); outline-offset:2px; }
-      .pua-edge-tts__label { color:var(--dsw-alias-label-primary); font-weight:500; }
-      .pua-edge-tts__status { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-      .pua-edge-tts__status[data-error='true'] { color:var(--dsw-alias-state-error-primary); }
-      @media (prefers-reduced-motion: reduce) { .pua-edge-tts__switch, .pua-edge-tts__switch::after { transition:none; } }
+      .pua-edge-tts { display:inline-flex; align-items:center; min-width:0; }
+      .pua-edge-tts__control { display:inline-flex; align-items:center; gap:6px; height:24px; margin:0; padding:0 6px; border:0; border-radius:999px; background:transparent; color:var(--dsw-alias-label-secondary); cursor:pointer; font:inherit; font-size:12px; line-height:18px; min-width:0; }
+      .pua-edge-tts__control:hover { background:var(--dsw-alias-bg-layer-2); }
+      .pua-edge-tts__control:focus-visible { outline:2px solid var(--dsw-alias-brand-primary); outline-offset:1px; }
+      .pua-edge-tts__control[data-enabled='true'] { color:var(--dsw-alias-brand-primary); }
+      .pua-edge-tts__control[data-busy='true'] { color:var(--dsw-alias-state-warn-primary); }
+      .pua-edge-tts__control[data-failed='true'] { color:var(--dsw-alias-state-error-primary); }
+      .pua-edge-tts__track { position:relative; display:block; width:26px; height:15px; flex:none; border-radius:999px; background:var(--dsw-alias-bg-layer-2); border:1px solid var(--dsw-alias-border-l2); transition:background .16s ease,border-color .16s ease; }
+      .pua-edge-tts__track::after { content:''; position:absolute; top:1px; left:1px; width:11px; height:11px; border-radius:50%; background:var(--dsw-alias-label-secondary); transition:transform .16s ease,background .16s ease; }
+      .pua-edge-tts__control[data-enabled='true'] .pua-edge-tts__track { background:var(--dsw-alias-brand-primary); border-color:var(--dsw-alias-brand-primary); }
+      .pua-edge-tts__control[data-enabled='true'] .pua-edge-tts__track::after { background:var(--dsw-alias-bg-base); transform:translateX(11px); }
+      .pua-edge-tts__text { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      .pua-edge-tts__sr { position:absolute; width:1px; height:1px; margin:-1px; padding:0; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; border:0; }
+      @media (max-width: 720px) { .pua-edge-tts__text { display:none; } }
+      @media (prefers-reduced-motion: reduce) { .pua-edge-tts__track, .pua-edge-tts__track::after { transition:none; } }
     `;
 
     function speechText(blocks) {
-      return blocks
+      return (Array.isArray(blocks) ? blocks : [])
         .filter((block) => block && block.kind === 'text' && typeof block.text === 'string')
         .map((block) => block.text)
         .join('\n\n')
@@ -57,21 +62,26 @@ window.__ModuleLoader__.load({
         .trim();
     }
 
+    function latestSettledAssistant(snapshot) {
+      if (!snapshot || !Array.isArray(snapshot.order) || !snapshot.nodes) return null;
+      for (let index = snapshot.order.length - 1; index >= 0; index -= 1) {
+        const node = snapshot.nodes.get(snapshot.order[index]);
+        if (node && node.kind === 'assistant-step' && node.data && node.data.status === 'settled' && node.data.finalNode) {
+          return node.data.finalNode;
+        }
+      }
+      return null;
+    }
+
     function VoiceOutput(props) {
       const { sessionId, useSession, useChat, t, locale } = props;
-      const storageKey = STORAGE_PREFIX + sessionId;
+      const storageKey = STORAGE_PREFIX + (sessionId === undefined || sessionId === null ? 'pending' : sessionId);
       const [enabled, setEnabled] = React.useState(() => localStorage.getItem(storageKey) === '1');
       const [state, setState] = React.useState('idle');
       const [detail, setDetail] = React.useState('');
       const [, refreshLocale] = React.useState(0);
-      const running = useSession((snapshot) => snapshot.running);
-      const latestAssistant = useChat((snapshot) => {
-        for (let index = snapshot.order.length - 1; index >= 0; index -= 1) {
-          const node = snapshot.nodes.get(snapshot.order[index]);
-          if (node?.kind === 'assistant-step' && node.data.status === 'settled' && node.data.finalNode) return node.data.finalNode;
-        }
-        return null;
-      });
+      const running = useSession((snapshot) => snapshot !== undefined && snapshot !== null && snapshot.running === true);
+      const latestAssistant = useChat(latestSettledAssistant);
       const previousRunning = React.useRef(running);
       const lastPlayedSeq = React.useRef(null);
       const audioContext = React.useRef(null);
@@ -151,8 +161,8 @@ window.__ModuleLoader__.load({
         playReply(latestAssistant);
       }, [enabled, running, latestAssistant, playReply]);
 
-      const toggle = async (event) => {
-        const next = event.target.checked;
+      const toggle = async () => {
+        const next = !enabled;
         setEnabled(next);
         setState('idle');
         setDetail('');
@@ -169,25 +179,26 @@ window.__ModuleLoader__.load({
 
       const statusKey = state === 'synthesizing' ? 'synthesizing' : state === 'playing' ? 'playing' : state === 'error' ? 'error' : enabled ? 'on' : 'off';
       const status = t(statusKey);
+      const busy = state === 'synthesizing' || state === 'playing';
       return h(React.Fragment, null,
         h('style', null, css),
         h('div', { className: 'pua-edge-tts' },
-          h('input', {
-            className: 'pua-edge-tts__switch',
-            type: 'checkbox',
+          h('button', {
+            type: 'button',
+            className: 'pua-edge-tts__control',
             role: 'switch',
-            checked: enabled,
             'aria-checked': enabled,
             'aria-label': t('label'),
-            onChange: toggle,
-          }),
-          h('span', { className: 'pua-edge-tts__label' }, t('label')),
-          h('span', {
-            className: 'pua-edge-tts__status',
-            'data-error': state === 'error' ? 'true' : 'false',
-            title: detail || status,
-            'aria-live': 'polite',
-          }, detail && state === 'error' ? `${status}: ${detail}` : status),
+            'data-enabled': enabled ? 'true' : 'false',
+            'data-busy': busy ? 'true' : 'false',
+            'data-failed': state === 'error' ? 'true' : 'false',
+            title: detail && state === 'error' ? `${status}: ${detail}` : status,
+            onClick: toggle,
+          },
+            h('span', { className: 'pua-edge-tts__track', 'aria-hidden': 'true' }),
+            h('span', { className: 'pua-edge-tts__text' }, t('label')),
+          ),
+          h('span', { className: 'pua-edge-tts__sr', 'aria-live': 'polite' }, status),
         ),
       );
     }
@@ -197,10 +208,10 @@ window.__ModuleLoader__.load({
       apply(ctx) {
         ctx.effect(() => ctx.locale.register(NS, dictionaries), 'edge-tts: dictionaries');
         const t = ctx.locale.bind(NS);
-        ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
-          name: 'conversation.composer.dock',
+        ctx.slots.inject('conversation.input.right', () => ctx.slots.register({
+          name: 'conversation.input.right',
           id: 'penguinuseagent-edge-tts',
-          order: 4,
+          order: 15,
         }, (props) => h(VoiceOutput, { ...props, t, locale: ctx.locale })));
       },
     };
