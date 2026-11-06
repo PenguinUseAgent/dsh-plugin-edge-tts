@@ -82,7 +82,8 @@ window.__ModuleLoader__.load({
       const [, refreshLocale] = React.useState(0);
       const running = useSession((snapshot) => snapshot !== undefined && snapshot !== null && snapshot.running === true);
       const latestAssistant = useChat(latestSettledAssistant);
-      const previousRunning = React.useRef(running);
+      const armed = React.useRef(false);
+      const armBaseline = React.useRef(0);
       const lastPlayedSeq = React.useRef(null);
       const audioContext = React.useRef(null);
       const currentSource = React.useRef(null);
@@ -93,7 +94,7 @@ window.__ModuleLoader__.load({
         setEnabled(localStorage.getItem(storageKey) === '1');
         setState('idle');
         setDetail('');
-        previousRunning.current = running;
+        armed.current = false;
         lastPlayedSeq.current = null;
       }, [storageKey]);
       React.useEffect(() => () => {
@@ -153,11 +154,23 @@ window.__ModuleLoader__.load({
       }, [ensureAudioContext]);
 
       React.useEffect(() => {
-        const completed = previousRunning.current === true && running === false;
-        previousRunning.current = running;
-        if (!enabled || !completed || !latestAssistant || latestAssistant.interrupted) return;
+        if (running) {
+          if (!armed.current) armBaseline.current = latestAssistant === null ? 0 : latestAssistant.seq;
+          armed.current = true;
+          if (currentSource.current) {
+            try { currentSource.current.stop(); } catch {}
+            currentSource.current = null;
+            setState('idle');
+          }
+          return;
+        }
+        if (!armed.current) return;
+        if (!latestAssistant || latestAssistant.interrupted) return;
+        if (latestAssistant.seq <= armBaseline.current) return;
         if (lastPlayedSeq.current === latestAssistant.seq) return;
         lastPlayedSeq.current = latestAssistant.seq;
+        armed.current = false;
+        if (!enabled) return;
         playReply(latestAssistant);
       }, [enabled, running, latestAssistant, playReply]);
 
