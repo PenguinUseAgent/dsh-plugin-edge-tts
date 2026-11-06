@@ -64,7 +64,17 @@ For plugin-development automation, pass the absolute checkout path to the Harnes
 
 The setting is stored on the DSH host, keyed by session ID, and shared by every connected client; browser `localStorage` only keeps a local cache. Toggling on one device reaches the others within about three seconds, and reloading a page re-reads the shared value. Every new session defaults to off.
 
-Each browser still needs one user gesture before it may play sound. The plugin listens for the first click or key press on the page and unlocks audio then; until that happens the switch shows a hint that a click is required.
+Each browser still needs one user gesture before it may play sound. The plugin listens for clicks, taps, and key presses anywhere on the page and unlocks audio then; until that happens the switch shows a hint that a click is required. Turning the switch on also speaks a short confirmation, so you can tell immediately whether that device can produce sound.
+
+## iPhone and iPad
+
+Browsers on iOS all run on WebKit, including Firefox and Chrome. Two extra behaviors matter there:
+
+- **Audio unlock**: a tap anywhere in the page resumes audio and primes an HTML media element. If the first playback request is still blocked, the reply is remembered and spoken as soon as the next tap unlocks audio.
+- **Silent switch**: iOS mutes web audio while the ring/silent switch is on. If a reply plays on the Mac but not on the iPhone, turn off the silent switch and raise the media volume.
+- **Lock screen**: a locked phone suspends the page. When the page becomes visible again, a reply that arrived while hidden and is less than five minutes old is spoken.
+
+Playback uses Web Audio first and falls back to an `<audio>` element when the audio context is not running.
 
 ## LAN use
 
@@ -97,7 +107,7 @@ If this file is removed, every session starts off again.
 
 ## Browser behavior
 
-Modern browsers require a user gesture before audio playback. Enabling the switch creates/resumes a Web Audio context during that gesture. When another device enables the shared switch, or after a full page load, the first click or key press anywhere on the page unlocks audio and later replies are spoken normally.
+Modern browsers require a user gesture before audio playback. Enabling the switch creates/resumes a Web Audio context during that gesture and primes a media element for iOS. When another device enables the shared switch, or after a full page load, the first click, tap, or key press anywhere on the page unlocks audio, and a blocked reply is retried on that gesture.
 
 ## Security and limits
 

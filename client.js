@@ -8,6 +8,8 @@ window.__ModuleLoader__.load({
     const STORAGE_PREFIX = 'dsh.edge-tts.enabled.v1.';
     const NS = 'edgeTtsVoiceOutput';
     const SYNC_INTERVAL_MS = 3000;
+    const MAX_REPLAY_AGE_MS = 5 * 60 * 1000;
+    const SILENT_WAV = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
 
     const dictionaries = {
       zh: {
@@ -15,6 +17,7 @@ window.__ModuleLoader__.load({
         on: '语音输出已开启，回复完成后自动朗读',
         off: '语音输出已关闭',
         gesture: '语音已开启；点击页面任意位置以授权播放声音',
+        confirm: '语音输出已开启。',
         synthesizing: '正在合成语音…',
         playing: '正在播放语音',
         error: '语音播放失败',
@@ -24,6 +27,7 @@ window.__ModuleLoader__.load({
         on: 'Voice output is on — completed replies are read aloud',
         off: 'Voice output is off',
         gesture: 'Voice output is on; click anywhere in this page to allow audio',
+        confirm: 'Voice output is on.',
         synthesizing: 'Synthesizing speech…',
         playing: 'Playing speech',
         error: 'Voice playback failed',
@@ -85,16 +89,22 @@ window.__ModuleLoader__.load({
       const [state, setState] = React.useState('idle');
       const [detail, setDetail] = React.useState('');
       const [needsGesture, setNeedsGesture] = React.useState(false);
+      const [wake, setWake] = React.useState(0);
       const [, refreshLocale] = React.useState(0);
       const running = useSession((snapshot) => snapshot !== undefined && snapshot !== null && snapshot.running === true);
       const latestAssistant = useChat(latestSettledAssistant);
-      const armed = React.useRef(false);
-      const armBaseline = React.useRef(0);
-      const lastPlayedSeq = React.useRef(null);
+      const initialized = React.useRef(false);
+      const baseline = React.useRef(0);
+      const lastPlayed = React.useRef(0);
       const audioContext = React.useRef(null);
       const currentSource = React.useRef(null);
+      const mediaElement = React.useRef(null);
+      const mediaPrimed = React.useRef(false);
       const requestGeneration = React.useRef(0);
       const enabledRef = React.useRef(enabled);
+      const hiddenSince = React.useRef(null);
+      const pendingReply = React.useRef(null);
+      const playReplyRef = React.useRef(null);
 
       React.useEffect(() => { enabledRef.current = enabled; }, [enabled]);
       React.useEffect(() => locale.subscribe(() => refreshLocale((value) => value + 1)), [locale]);
@@ -111,12 +121,27 @@ window.__ModuleLoader__.load({
         setState('idle');
         setDetail('');
         setNeedsGesture(false);
-        armed.current = false;
-        lastPlayedSeq.current = null;
+        initialized.current = false;
+        baseline.current = 0;
+        lastPlayed.current = 0;
       }, [storageKey]);
+
+      const stopPlayback = React.useCallback(() => {
+        try { currentSource.current?.stop(); } catch {}
+        currentSource.current = null;
+        if (mediaElement.current !== null) {
+          try { mediaElement.current.pause(); } catch {}
+          mediaElement.current = null;
+        }
+        setState('idle');
+      }, []);
+
       React.useEffect(() => () => {
         requestGeneration.current += 1;
         try { currentSource.current?.stop(); } catch {}
+        if (mediaElement.current !== null) {
+          try { mediaElement.current.pause(); } catch {}
+        }
         audioContext.current?.close().catch(() => {});
       }, []);
 
@@ -129,6 +154,17 @@ window.__ModuleLoader__.load({
         }
         setNeedsGesture(audioContext.current.state !== 'running');
         return audioContext.current;
+      }, []);
+
+      const primeMedia = React.useCallback(() => {
+        if (mediaPrimed.current) return;
+        mediaPrimed.current = true;
+        try {
+          const audio = new Audio(SILENT_WAV);
+          audio.volume = 0;
+          const played = audio.play();
+          if (played && typeof played.catch === 'function') played.catch(() => {});
+        } catch {}
       }, []);
 
       const postState = React.useCallback(async (value) => {
@@ -156,7 +192,6 @@ window.__ModuleLoader__.load({
             mirror(data.enabled);
             return;
           }
-          // Migrate only a previously enabled local preference; never write an implicit "off".
           if (enabledRef.current) await postState(true);
         } catch {}
       }, [sessionId, mirror, postState]);
@@ -169,7 +204,12 @@ window.__ModuleLoader__.load({
         tick();
         const timer = setInterval(tick, SYNC_INTERVAL_MS);
         const onVisible = () => {
-          if (document.visibilityState === 'visible') syncState();
+          if (document.visibilityState !== 'visible') {
+            hiddenSince.current = Date.now();
+            return;
+          }
+          syncState();
+          setWake((value) => value + 1);
         };
         document.addEventListener('visibilitychange', onVisible);
         window.addEventListener('focus', onVisible);
@@ -181,14 +221,48 @@ window.__ModuleLoader__.load({
       }, [sessionId, syncState]);
 
       React.useEffect(() => {
-        const unlock = () => { ensureAudioContext().catch(() => {}); };
-        document.addEventListener('pointerdown', unlock, { once: true, capture: true });
-        document.addEventListener('keydown', unlock, { once: true, capture: true });
+        const unlock = () => {
+          ensureAudioContext().then((context) => {
+            if (!context || context.state !== 'running') return;
+            const pending = pendingReply.current;
+            if (pending !== null && enabledRef.current) {
+              pendingReply.current = null;
+              playReplyRef.current?.(pending);
+            }
+          }).catch(() => {});
+          primeMedia();
+        };
+        document.addEventListener('pointerdown', unlock, { capture: true, passive: true });
+        document.addEventListener('touchstart', unlock, { capture: true, passive: true });
+        document.addEventListener('keydown', unlock, { capture: true });
         return () => {
           document.removeEventListener('pointerdown', unlock, true);
+          document.removeEventListener('touchstart', unlock, true);
           document.removeEventListener('keydown', unlock, true);
         };
-      }, [ensureAudioContext]);
+      }, [ensureAudioContext, primeMedia]);
+
+      const playViaElement = React.useCallback(async (bytes) => {
+        const url = URL.createObjectURL(new Blob([bytes], { type: 'audio/mpeg' }));
+        const audio = new Audio(url);
+        audio.preload = 'auto';
+        mediaElement.current = audio;
+        const cleanup = () => {
+          URL.revokeObjectURL(url);
+          if (mediaElement.current === audio) {
+            mediaElement.current = null;
+            setState('idle');
+          }
+        };
+        audio.addEventListener('ended', cleanup, { once: true });
+        audio.addEventListener('error', cleanup, { once: true });
+        try {
+          await audio.play();
+        } catch (error) {
+          cleanup();
+          throw error;
+        }
+      }, []);
 
       const playReply = React.useCallback(async (assistant) => {
         const text = speechText(assistant.blocks || []);
@@ -209,53 +283,74 @@ window.__ModuleLoader__.load({
           const bytes = await response.arrayBuffer();
           if (generation !== requestGeneration.current) return;
           const context = await ensureAudioContext();
-          if (!context) throw new Error('Web Audio API is unavailable.');
-          if (context.state !== 'running') {
-            setState('idle');
+          if (context !== null && context.state === 'running') {
+            const buffer = await context.decodeAudioData(bytes.slice(0));
+            if (generation !== requestGeneration.current) return;
+            try { currentSource.current?.stop(); } catch {}
+            const source = context.createBufferSource();
+            source.buffer = buffer;
+            source.connect(context.destination);
+            source.onended = () => {
+              if (currentSource.current === source) {
+                currentSource.current = null;
+                setState('idle');
+              }
+            };
+            currentSource.current = source;
+            source.start();
+            setState('playing');
             return;
           }
-          const buffer = await context.decodeAudioData(bytes.slice(0));
+          await playViaElement(bytes);
           if (generation !== requestGeneration.current) return;
-          try { currentSource.current?.stop(); } catch {}
-          const source = context.createBufferSource();
-          source.buffer = buffer;
-          source.connect(context.destination);
-          source.onended = () => {
-            if (currentSource.current === source) {
-              currentSource.current = null;
-              setState('idle');
-            }
-          };
-          currentSource.current = source;
-          source.start();
           setState('playing');
         } catch (error) {
           if (generation !== requestGeneration.current) return;
+          if (error && error.name === 'NotAllowedError') {
+            pendingReply.current = assistant;
+            setNeedsGesture(true);
+            setState('idle');
+            return;
+          }
           setState('error');
           setDetail(error instanceof Error ? error.message : String(error));
         }
-      }, [ensureAudioContext]);
+      }, [ensureAudioContext, playViaElement]);
+
+      React.useEffect(() => { playReplyRef.current = playReply; }, [playReply]);
 
       React.useEffect(() => {
-        if (running) {
-          if (!armed.current) armBaseline.current = latestAssistant === null ? 0 : latestAssistant.seq;
-          armed.current = true;
-          if (currentSource.current) {
-            try { currentSource.current.stop(); } catch {}
-            currentSource.current = null;
-            setState('idle');
+        if (!initialized.current) {
+          if (running) {
+            baseline.current = latestAssistant === null ? 0 : latestAssistant.seq;
+            lastPlayed.current = baseline.current;
+            initialized.current = true;
+          } else if (latestAssistant !== null) {
+            baseline.current = latestAssistant.seq;
+            lastPlayed.current = latestAssistant.seq;
+            initialized.current = true;
+            const since = hiddenSince.current;
+            hiddenSince.current = null;
+            if (since !== null && typeof latestAssistant.time === 'number' && latestAssistant.time >= since - 5000) {
+              lastPlayed.current = latestAssistant.seq - 1;
+            }
+          } else {
+            return;
           }
+        }
+        if (running) {
+          if (currentSource.current !== null || mediaElement.current !== null) stopPlayback();
           return;
         }
-        if (!armed.current) return;
-        if (!latestAssistant || latestAssistant.interrupted) return;
-        if (latestAssistant.seq <= armBaseline.current) return;
-        if (lastPlayedSeq.current === latestAssistant.seq) return;
-        lastPlayedSeq.current = latestAssistant.seq;
-        armed.current = false;
         if (!enabled) return;
-        playReply(latestAssistant);
-      }, [enabled, running, latestAssistant, playReply]);
+        const candidate = latestAssistant;
+        if (!candidate || candidate.interrupted) return;
+        if (candidate.seq <= lastPlayed.current) return;
+        lastPlayed.current = candidate.seq;
+        const age = Date.now() - (typeof candidate.time === 'number' ? candidate.time : Date.now());
+        if (age > MAX_REPLAY_AGE_MS) return;
+        playReply(candidate);
+      }, [enabled, running, latestAssistant, wake, playReply, stopPlayback]);
 
       const toggle = async () => {
         const next = !enabled;
@@ -266,10 +361,11 @@ window.__ModuleLoader__.load({
         setDetail('');
         if (next) {
           try { await ensureAudioContext(); } catch {}
+          primeMedia();
+          playReply({ blocks: [{ kind: 'text', text: t('confirm') }], time: Date.now(), seq: -1 });
         } else {
           requestGeneration.current += 1;
-          try { currentSource.current?.stop(); } catch {}
-          currentSource.current = null;
+          stopPlayback();
         }
         try {
           await postState(next);
