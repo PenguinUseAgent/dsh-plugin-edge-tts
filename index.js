@@ -1,16 +1,20 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { spawn } from 'node:child_process';
 
 export const inject = ['webServer'];
 
 const ROUTE = '/api/plugin/edge-tts/synthesize';
+const STATE_ROUTE = '/api/plugin/edge-tts/state';
 const DEFAULT_VOICE = 'zh-CN-XiaoxiaoNeural';
 const MAX_BODY_BYTES = 64 * 1024;
 const MAX_TEXT_LENGTH = 12_000;
+const MAX_SESSION_ID_LENGTH = 200;
 const CACHE_LIMIT = 20;
+const STATE_LIMIT = 500;
+const STATE_WRITE_DELAY_MS = 200;
 const SYNTHESIS_TIMEOUT_MS = 90_000;
 
 function json(res, status, value) {
@@ -30,6 +34,13 @@ export function normalizeSpeechText(value) {
     .replace(/\n{3,}/g, '\n\n')
     .trim()
     .slice(0, MAX_TEXT_LENGTH);
+}
+
+export function isValidSessionId(value) {
+  return typeof value === 'string'
+    && value.length > 0
+    && value.length <= MAX_SESSION_ID_LENGTH
+    && !/[\u0000-\u001f\u007f]/.test(value);
 }
 
 export function isSameOriginRequest(req) {
@@ -63,6 +74,123 @@ async function readJsonBody(req) {
     error.statusCode = 400;
     throw error;
   }
+}
+
+export function defaultStateFile() {
+  const home = process.env.DSH_HOME ?? join(homedir(), '.dsh');
+  return join(home, 'plugin-data', 'edge-tts', 'state.json');
+}
+
+/**
+ * Per-session voice-output flag shared by every client of one Host.
+ * Values live in memory and are written to a JSON file with a short debounce,
+ * so a toggle on one device is visible to the others without a restart.
+ */
+export function createSessionStateStore(options = {}) {
+  const file = options.file ?? defaultStateFile();
+  const limit = options.limit ?? STATE_LIMIT;
+  const states = new Map();
+  let loaded = null;
+  let timer = null;
+  let writing = Promise.resolve();
+
+  async function load() {
+    if (loaded !== null) return states;
+    loaded = (async () => {
+      try {
+        const parsed = JSON.parse(await readFile(file, 'utf8'));
+        const sessions = parsed?.sessions;
+        if (sessions !== null && typeof sessions === 'object') {
+          for (const [sessionId, enabled] of Object.entries(sessions)) {
+            if (isValidSessionId(sessionId) && typeof enabled === 'boolean') states.set(sessionId, enabled);
+          }
+        }
+      } catch (error) {
+        if (error?.code !== 'ENOENT') states.clear();
+      }
+      return states;
+    })();
+    await loaded;
+    return states;
+  }
+
+  async function persist() {
+    const snapshot = JSON.stringify({ version: 1, sessions: Object.fromEntries(states) }, null, 2);
+    await mkdir(dirname(file), { recursive: true });
+    const temporary = `${file}.${process.pid}.${Date.now()}.tmp`;
+    await writeFile(temporary, snapshot, { mode: 0o600 });
+    await rename(temporary, file);
+  }
+
+  function scheduleWrite() {
+    if (timer !== null) return;
+    timer = setTimeout(() => {
+      timer = null;
+      writing = writing.then(persist).catch(() => {});
+    }, options.writeDelayMs ?? STATE_WRITE_DELAY_MS);
+    if (typeof timer.unref === 'function') timer.unref();
+  }
+
+  return {
+    file,
+    async get(sessionId) {
+      await load();
+      const value = states.get(sessionId);
+      return value === undefined ? null : value;
+    },
+    async set(sessionId, enabled) {
+      await load();
+      states.delete(sessionId);
+      states.set(sessionId, enabled);
+      while (states.size > limit) states.delete(states.keys().next().value);
+      scheduleWrite();
+      return enabled;
+    },
+    async flush() {
+      await load();
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+        writing = writing.then(persist).catch(() => {});
+      }
+      await writing;
+    },
+    dispose() {
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    },
+  };
+}
+
+export function createStateHandler(store) {
+  return async (req, res) => {
+    if (!isSameOriginRequest(req)) return json(res, 403, { error: 'Cross-origin state access is not allowed.' });
+    try {
+      if (req.method === 'GET') {
+        const url = new URL(req.url ?? STATE_ROUTE, 'http://localhost');
+        const sessionId = url.searchParams.get('sessionId') ?? '';
+        if (!isValidSessionId(sessionId)) return json(res, 400, { error: 'A valid sessionId query parameter is required.' });
+        return json(res, 200, { enabled: await store.get(sessionId) });
+      }
+      if (req.method !== 'POST') {
+        res.setHeader('Allow', 'GET, POST');
+        return json(res, 405, { error: 'Method not allowed.' });
+      }
+      if (!String(req.headers['content-type'] ?? '').toLowerCase().startsWith('application/json')) {
+        return json(res, 415, { error: 'Content-Type must be application/json.' });
+      }
+      const body = await readJsonBody(req);
+      if (!isValidSessionId(body?.sessionId) || typeof body?.enabled !== 'boolean') {
+        return json(res, 400, { error: 'sessionId and boolean enabled are required.' });
+      }
+      return json(res, 200, { enabled: await store.set(body.sessionId, body.enabled) });
+    } catch (error) {
+      const status = Number.isInteger(error?.statusCode) ? error.statusCode : 500;
+      return json(res, status, { error: error instanceof Error ? error.message : String(error) });
+    }
+  };
 }
 
 export function runEdgeTts(text, options = {}) {
@@ -170,9 +298,16 @@ export function createSynthesisHandler(options = {}) {
 }
 
 export function apply(ctx) {
+  const store = createSessionStateStore();
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
     path: ROUTE,
     handler: createSynthesisHandler(),
   }), 'edge-tts: synthesis endpoint');
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: STATE_ROUTE,
+    handler: createStateHandler(store),
+  }), 'edge-tts: shared state endpoint');
+  ctx.effect(() => () => store.dispose(), 'edge-tts: state store');
 }
